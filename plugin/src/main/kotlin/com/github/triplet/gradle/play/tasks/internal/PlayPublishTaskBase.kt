@@ -6,29 +6,22 @@ import com.github.triplet.gradle.play.internal.EDIT_ID_FILE
 import com.github.triplet.gradle.play.internal.has
 import com.github.triplet.gradle.play.internal.nullOrFull
 import com.github.triplet.gradle.play.internal.orNull
-import com.github.triplet.gradle.play.internal.safeCreateNewFile
 import com.google.api.client.googleapis.json.GoogleJsonResponseException
 import com.google.api.services.androidpublisher.AndroidPublisher
 import org.gradle.api.DefaultTask
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.Nested
-import org.gradle.internal.logging.progress.ProgressLogger
-import org.gradle.internal.logging.progress.ProgressLoggerFactory
 import java.io.File
 
 abstract class PlayPublishTaskBase(
-        @get:Nested protected open val extension: PlayPublisherExtension,
-        @get:Internal protected val variant: ApplicationVariant
+        @get:Nested internal open val extension: PlayPublisherExtension,
+        @get:Internal internal val variant: ApplicationVariant
 ) : DefaultTask() {
-    private val savedEditId = File(project.rootProject.buildDir, EDIT_ID_FILE)
+    internal val savedEditId = File(project.rootProject.buildDir, EDIT_ID_FILE)
     @get:Internal protected val hasSavedEdit get() = savedEditId.exists()
 
     @get:Internal
-    protected val progressLogger: ProgressLogger = services[ProgressLoggerFactory::class.java]
-            .newOperation(javaClass)
-
-    @get:Internal
-    protected val publisher by lazy { extension.buildPublisher() }
+    protected val publisher by lazy { extension.toSerializable().buildPublisher() }
 
     protected fun read(
             skipIfNotFound: Boolean = false,
@@ -65,19 +58,5 @@ abstract class PlayPublishTaskBase(
         }
 
         edits.block(id)
-    }
-
-    protected fun write(block: AndroidPublisher.Edits.(editId: String) -> Unit) = read {
-        block(it)
-
-        if (extension.commit) {
-            try {
-                commit(variant.applicationId, it).execute()
-            } finally {
-                project.delete(savedEditId)
-            }
-        } else {
-            savedEditId.safeCreateNewFile().writeText(it)
-        }
     }
 }

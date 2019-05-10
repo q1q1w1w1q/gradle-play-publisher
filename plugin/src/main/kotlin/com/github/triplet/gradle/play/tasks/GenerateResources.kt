@@ -64,6 +64,9 @@ open class GenerateResources @Inject constructor(
             if (isHidden(file)) return@outOfDate
             file.validate()
 
+            // TODO fix bug where adding file in non-default language doesn't pull from default lang
+            //  files
+            // TODO fix bug where changing file in default lang doesn't update non-default
             defaultLocale?.let {
                 if (file.isFile && file.isChildOf(LISTINGS_PATH) && file.isChildOf(it)) {
                     changedDefaults += file

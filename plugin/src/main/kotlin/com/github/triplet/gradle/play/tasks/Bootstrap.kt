@@ -17,7 +17,6 @@ import com.github.triplet.gradle.play.tasks.internal.BootstrapOptions
 import com.github.triplet.gradle.play.tasks.internal.PlayPublishTaskBase
 import com.google.api.client.json.jackson2.JacksonFactory
 import com.google.api.services.androidpublisher.AndroidPublisher
-import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
@@ -42,8 +41,6 @@ open class Bootstrap @Inject constructor(
         project.file("src/${variant.flavorNameOrDefault}/$PLAY_PATH")
     }
 
-    @get:Internal protected val workerExecutor = project.serviceOf<WorkerExecutor>()
-
     init {
         // Always out-of-date since we don't know what's changed on the network
         outputs.upToDateWhen { false }
@@ -51,20 +48,20 @@ open class Bootstrap @Inject constructor(
 
     @TaskAction
     fun bootstrap() = read { editId ->
-        progressLogger.start("Downloads resources for variant ${variant.name}", null)
+        //        progressLogger.start("Downloads resources for variant ${variant.name}", null)
 
         if (downloadAppDetails) bootstrapAppDetails(editId)
         if (downloadListings) bootstrapListings(editId)
         if (downloadReleaseNotes) bootstrapReleaseNotes(editId)
         if (downloadProducts) bootstrapProducts()
 
-        progressLogger.completed()
+//        progressLogger.completed()
     }
 
     private fun AndroidPublisher.Edits.bootstrapAppDetails(editId: String) {
         fun String.write(detail: AppDetail) = write(srcDir, detail.fileName)
 
-        progressLogger.progress("Downloading app details")
+//        progressLogger.progress("Downloading app details")
         val details = details().get(variant.applicationId, editId).execute()
 
         details.contactEmail.nullOrFull()?.write(AppDetail.CONTACT_EMAIL)
@@ -74,7 +71,7 @@ open class Bootstrap @Inject constructor(
     }
 
     private fun AndroidPublisher.Edits.bootstrapListings(editId: String) {
-        progressLogger.progress("Fetching listings")
+//        progressLogger.progress("Fetching listings")
         val listings = listings()
                 .list(variant.applicationId, editId)
                 .execute()
@@ -86,7 +83,7 @@ open class Bootstrap @Inject constructor(
             fun downloadMetadata() {
                 fun String.write(detail: ListingDetail) = write(rootDir, detail.fileName)
 
-                progressLogger.progress("Downloading ${listing.language} listing")
+//                progressLogger.progress("Downloading ${listing.language} listing")
                 listing.fullDescription.nullOrFull()?.write(ListingDetail.FULL_DESCRIPTION)
                 listing.shortDescription.nullOrFull()?.write(ListingDetail.SHORT_DESCRIPTION)
                 listing.title.nullOrFull()?.write(ListingDetail.TITLE)
@@ -96,8 +93,8 @@ open class Bootstrap @Inject constructor(
             fun downloadImages() {
                 for (type in ImageType.values()) {
                     val typeName = type.publishedName
-                    progressLogger.progress(
-                            "Downloading ${listing.language} listing graphics for type '$typeName'")
+//                    progressLogger.progress(
+//                            "Downloading ${listing.language} listing graphics for type '$typeName'")
                     val images = images()
                             .list(variant.applicationId, editId, listing.language, typeName)
                             .execute()
@@ -105,7 +102,7 @@ open class Bootstrap @Inject constructor(
                     val imageDir = File(rootDir, "$GRAPHICS_PATH/${type.dirName}")
 
                     for (image in images) {
-                        workerExecutor.submit(ImageDownloader::class) {
+                        project.serviceOf<WorkerExecutor>().submit(ImageDownloader::class) {
                             params(ImageDownloader.Params(
                                     image.url, File(imageDir, "${image.id}.png")))
                         }
@@ -119,7 +116,7 @@ open class Bootstrap @Inject constructor(
     }
 
     private fun AndroidPublisher.Edits.bootstrapReleaseNotes(editId: String) {
-        progressLogger.progress("Downloading release notes")
+//        progressLogger.progress("Downloading release notes")
         tracks().list(variant.applicationId, editId).execute().tracks?.forEach { track ->
             track.releases?.maxBy {
                 it.versionCodes?.max() ?: Long.MIN_VALUE
@@ -130,7 +127,7 @@ open class Bootstrap @Inject constructor(
     }
 
     private fun bootstrapProducts() {
-        progressLogger.progress("Downloading in-app products")
+//        progressLogger.progress("Downloading in-app products")
         publisher.inappproducts().list(variant.applicationId).execute().inappproduct?.forEach {
             JacksonFactory.getDefaultInstance()
                     .toPrettyString(it)

@@ -1,14 +1,11 @@
 package com.github.triplet.gradle.play.tasks.internal
 
-import com.android.build.gradle.api.ApplicationVariant
 import com.github.triplet.gradle.play.PlayPublisherExtension
 import com.github.triplet.gradle.play.internal.MIME_TYPE_STREAM
 import com.github.triplet.gradle.play.internal.RELEASE_NAMES_DEFAULT_NAME
 import com.github.triplet.gradle.play.internal.RELEASE_NAMES_MAX_LENGTH
-import com.github.triplet.gradle.play.internal.RELEASE_NAMES_PATH
 import com.github.triplet.gradle.play.internal.RELEASE_NOTES_DEFAULT_NAME
 import com.github.triplet.gradle.play.internal.RELEASE_NOTES_MAX_LENGTH
-import com.github.triplet.gradle.play.internal.RELEASE_NOTES_PATH
 import com.github.triplet.gradle.play.internal.ReleaseStatus
 import com.github.triplet.gradle.play.internal.ResolutionStrategy
 import com.github.triplet.gradle.play.internal.has
@@ -23,54 +20,73 @@ import com.google.api.services.androidpublisher.AndroidPublisher
 import com.google.api.services.androidpublisher.model.LocalizedText
 import com.google.api.services.androidpublisher.model.Track
 import com.google.api.services.androidpublisher.model.TrackRelease
-import org.gradle.api.tasks.InputDirectory
-import org.gradle.api.tasks.InputFile
-import org.gradle.api.tasks.Internal
-import org.gradle.api.tasks.Optional
-import org.gradle.api.tasks.PathSensitive
-import org.gradle.api.tasks.PathSensitivity
+import org.gradle.workers.WorkerConfiguration
 import java.io.File
+import java.io.Serializable
 
-abstract class PlayPublishPackageBase(
-        extension: PlayPublisherExtension,
-        variant: ApplicationVariant
-) : PlayPublishTaskBase(extension, variant) {
-    @get:Internal internal lateinit var resDir: File
+internal fun PlayPublishTaskBase.paramsForBase(
+        config: WorkerConfiguration,
+        p: Any,
+        editId: String? = null
+) {
+    val base = PlayWorkerBase.PlayPublishingData(
+            extension.toSerializable(),
+            variant.applicationId,
+            savedEditId,
+            editId
+    )
 
-    @Suppress("MemberVisibilityCanBePrivate", "unused") // Used by Gradle
-    @get:PathSensitive(PathSensitivity.RELATIVE)
-    @get:Optional
-    @get:InputDirectory
-    internal val releaseNotesDir
-        get() = File(resDir, RELEASE_NOTES_PATH).orNull()
+    if (this is PlayPublishPackageBase) {
+        val artifact = ArtifactWorkerBase.ArtifactPublishingData(
+                variant.name,
+                variant.outputs.map { it.versionCode }.first(),
 
-    @Suppress("MemberVisibilityCanBePrivate", "unused") // Used by Gradle
-    @get:PathSensitive(PathSensitivity.RELATIVE)
-    @get:Optional
-    @get:InputDirectory
-    internal val consoleNamesDir
-        get() = File(resDir, RELEASE_NAMES_PATH).orNull()
+                releaseNotesDir,
+                consoleNamesDir,
+                mappingFile
+        )
 
-    @Suppress("MemberVisibilityCanBePrivate", "unused") // Used by Gradle
-    @get:PathSensitive(PathSensitivity.RELATIVE)
-    @get:Optional
-    @get:InputFile
-    internal val mappingFile: File?
-        get() {
-            val customDir = extension._artifactDir
+        config.params(p, artifact, base)
+    } else {
+        config.params(p, base)
+    }
+}
 
-            return if (customDir == null) {
-                variant.mappingFile?.orNull()
-            } else {
-                customDir.listFiles().orEmpty().singleOrNull { it.name == "mapping.txt" }
-            }
-        }
+internal abstract class PlayWorkerBase(private val data: PlayPublishingData) : Runnable {
+    protected val extension = data.extension
+    protected val publisher = extension.buildPublisher()
+    protected val appId = data.applicationId
+    protected val editId = data.editId ?: publisher.getOrCreateEditId(appId, data.savedEditId)
+    protected val edits: AndroidPublisher.Edits = publisher.edits()
 
-    protected fun AndroidPublisher.Edits.updateTracks(editId: String, versions: List<Long>) {
-//        progressLogger.progress("Updating tracks")
+    protected fun commit() = publisher.commit(extension, appId, editId, data.savedEditId)
 
-        val track = if (hasSavedEdit) {
-            tracks().get(variant.applicationId, editId, extension.track).execute().apply {
+    internal data class PlayPublishingData(
+            val extension: PlayPublisherExtension.Serializable,
+
+            val applicationId: String,
+
+            val savedEditId: File,
+            val editId: String?
+    ) : Serializable
+}
+
+internal abstract class ArtifactWorkerBase(
+        private val artifact: ArtifactPublishingData,
+        private val play: PlayPublishingData
+) : PlayWorkerBase(play) {
+    final override fun run() {
+        upload()
+        commit()
+    }
+
+    abstract fun upload()
+
+    protected fun updateTracks(editId: String, versions: List<Long>) {
+        println("Updating tracks ($appId:$versions)")
+
+        val track = if (play.savedEditId.exists()) {
+            edits.tracks().get(appId, editId, extension.track).execute().apply {
                 releases = if (releases.isNullOrEmpty()) {
                     listOf(TrackRelease().applyChanges(versions))
                 } else {
@@ -84,7 +100,7 @@ abstract class PlayPublishPackageBase(
                 }
             }
         } else if (extension.releaseStatusOrDefault == ReleaseStatus.IN_PROGRESS) {
-            tracks().get(variant.applicationId, editId, extension.track).execute().apply {
+            edits.tracks().get(appId, editId, extension.track).execute().apply {
                 val keep = releases.orEmpty().filter {
                     it.status == ReleaseStatus.COMPLETED.publishedName ||
                             it.status == ReleaseStatus.DRAFT.publishedName
@@ -98,9 +114,7 @@ abstract class PlayPublishPackageBase(
             }
         }
 
-        tracks()
-                .update(variant.applicationId, editId, extension.track, track)
-                .execute()
+        edits.tracks().update(appId, editId, extension.track, track).execute()
     }
 
     protected fun TrackRelease.applyChanges(
@@ -112,12 +126,12 @@ abstract class PlayPublishPackageBase(
         versionCodes?.let { this.versionCodes = it }
         if (updateStatus) status = extension.releaseStatus
         if (updateConsoleName) {
-            val file = File(consoleNamesDir, "${extension.track}.txt").orNull()
-                    ?: File(consoleNamesDir, RELEASE_NAMES_DEFAULT_NAME).orNull()
+            val file = File(artifact.consoleNamesDir, "${extension.track}.txt").orNull()
+                    ?: File(artifact.consoleNamesDir, RELEASE_NAMES_DEFAULT_NAME).orNull()
             name = file?.readProcessed(RELEASE_NAMES_MAX_LENGTH)?.lines()?.firstOrNull()
         }
 
-        val releaseNotes = releaseNotesDir?.listFiles().orEmpty().mapNotNull { locale ->
+        val releaseNotes = artifact.releaseNotesDir?.listFiles().orEmpty().mapNotNull { locale ->
             val file = File(locale, "${extension.track}.txt").orNull() ?: run {
                 File(locale, RELEASE_NOTES_DEFAULT_NAME).orNull() ?: return@mapNotNull null
             }
@@ -153,36 +167,46 @@ abstract class PlayPublishPackageBase(
         return this
     }
 
-    protected fun handleUploadFailures(e: GoogleJsonResponseException, file: File): Nothing? {
-        val isConflict = e has "apkUpgradeVersionConflict" || e has "apkNoUpgradePath"
-        if (isConflict) {
-            when (extension.resolutionStrategyOrDefault) {
-                ResolutionStrategy.AUTO -> throw IllegalStateException(
-                        "Concurrent uploads for variant ${variant.name}. Make sure to " +
-                                "synchronously upload your APKs such that they don't conflict.",
-                        e
-                )
-                ResolutionStrategy.FAIL -> throw IllegalStateException(
-                        "Version code ${variant.versionCode} is too low for variant ${variant.name}.",
-                        e
-                )
-                ResolutionStrategy.IGNORE -> logger.warn(
-                        "Ignoring APK ($file) for version code ${variant.versionCode}")
-            }
-            return null
-        } else {
-            throw e
+    protected fun handleUploadFailures(
+            e: GoogleJsonResponseException,
+            file: File
+    ): Nothing? = if (e has "apkUpgradeVersionConflict" || e has "apkNoUpgradePath") {
+        when (extension.resolutionStrategyOrDefault) {
+            ResolutionStrategy.AUTO -> throw IllegalStateException(
+                    "Concurrent uploads for variant ${artifact.variantName}. Make sure to " +
+                            "synchronously upload your APKs such that they don't conflict.",
+                    e
+            )
+            ResolutionStrategy.FAIL -> throw IllegalStateException(
+                    "Version code ${artifact.versionCode} is too low for variant " +
+                            "${artifact.variantName}.",
+                    e
+            )
+            ResolutionStrategy.IGNORE -> println(
+                    "Ignoring APK ($file) for version code ${artifact.versionCode}")
         }
+        null
+    } else {
+        throw e
     }
 
-    protected fun AndroidPublisher.Edits.handlePackageDetails(editId: String, versionCode: Int) {
-        val file = mappingFile
+    protected fun handlePackageDetails(editId: String, versionCode: Int) {
+        val file = artifact.mappingFile
         if (file != null && file.length() > 0) {
             val mapping = FileContent(MIME_TYPE_STREAM, file)
-            deobfuscationfiles()
-                    .upload(variant.applicationId, editId, versionCode, "proguard", mapping)
+            edits.deobfuscationfiles()
+                    .upload(appId, editId, versionCode, "proguard", mapping)
                     .trackUploadProgress("mapping file")
                     .execute()
         }
     }
+
+    internal data class ArtifactPublishingData(
+            val variantName: String,
+            val versionCode: Int,
+
+            val releaseNotesDir: File?,
+            val consoleNamesDir: File?,
+            val mappingFile: File?
+    ) : Serializable
 }
