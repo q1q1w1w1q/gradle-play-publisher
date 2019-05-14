@@ -78,7 +78,7 @@ To use GPP, you must create a service account with access to the Play Developer 
 guide to setting up the service account
 [here](https://developers.google.com/android-publisher/getting_started#using_a_service_account).
 Once that's done, you'll need to grant at least the following permissions to your service account
-for GPP to work (go to Settings -> Developer account -> Users & permissions):
+for GPP to work (go to Google Play Console -> Settings -> Developer account -> Users & permissions):
 
 <p>
     <img alt="Minimum Service Account permissions" src="assets/min-perms.png" width="66%" />
